@@ -99,3 +99,7 @@ ENV/
 
 # mypy
 .mypy_cache/
+
+# datafiles
+alexnet_weights.h5
+hw2_data/

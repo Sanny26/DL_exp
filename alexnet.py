@@ -9,9 +9,7 @@ from keras.layers.convolutional import MaxPooling2D
 from keras.layers.convolutional import ZeroPadding2D
 from keras.preprocessing import image
 from keras import backend as K
-from keras.engine import Layer
 from keras.layers.core import Lambda
-from keras.layers import Merge
 from keras.utils.layer_utils import convert_all_kernels_in_model
 from keras.models import Model
 
@@ -26,144 +24,132 @@ def batch_generator(x_path, y_path, batch_size=32):
     y = file.strip().split(',')
 
     X_batch = np.zeros((batch_size, 227, 227, 3))
-    y_batch = np.zeros((batch_size, 1))
+    y_batch = np.zeros((batch_size, 8))
 
     while True:
         for i in range(batch_size):
             index = np.random.randint(0, high=len(files))
             file = str(index+1)+'.jpg'
             img = image.load_img(x_path+file, target_size=(227, 227))
-            img = image.img_to_array(img)
+            img = image.img_to_array(img, data_format='channels_last')
             X_batch[i] = img
-            y_batch[i] = y[index]
+            y_batch[i][int(y[index])-1] = 1
         yield X_batch, y_batch
 
 
 def AlexNet(weights_path=None):
-    inputs = Input(shape=(227,227,3))
+    inputs = Input(shape=(227, 227, 3))
 
-    conv_1 = Convolution2D(96, (11, 11), strides=(4,4),activation='relu',
+    conv_1 = Convolution2D(96, (11, 11), strides=(4, 4), activation='relu',
                            name='conv_1')(inputs)
 
-    conv_2 = MaxPooling2D((3, 3), strides=(2,2))(conv_1)
+    conv_2 = MaxPooling2D((3, 3), strides=(2, 2))(conv_1)
     conv_2 = crosschannelnormalization(name="convpool_1")(conv_2)
-    conv_2 = ZeroPadding2D((2,2))(conv_2)
+    conv_2 = ZeroPadding2D((2, 2))(conv_2)
     conv_2 = concatenate([
-        Convolution2D(128,(5,5),activation="relu",name='conv_2_'+str(i+1))(
-            splittensor(ratio_split=2,id_split=i)(conv_2)
+        Convolution2D(128, (5, 5), activation="relu", name='conv_2_'+str(i+1))(
+            splittensor(ratio_split=2, id_split=i)(conv_2)
         ) for i in range(2)], axis=-1, name="conv_2")
 
     conv_3 = MaxPooling2D((3, 3), strides=(2, 2))(conv_2)
     conv_3 = crosschannelnormalization()(conv_3)
-    conv_3 = ZeroPadding2D((1,1))(conv_3)
-    conv_3 = Convolution2D(384,(3,3),activation='relu',name='conv_3')(conv_3)
+    conv_3 = ZeroPadding2D((1, 1))(conv_3)
+    conv_3 = Convolution2D(384, (3, 3), activation='relu', name='conv_3')(conv_3)
 
-    conv_4 = ZeroPadding2D((1,1))(conv_3)
+    conv_4 = ZeroPadding2D((1, 1))(conv_3)
     conv_4 = concatenate([
-        Convolution2D(192,(3,3),activation="relu",name='conv_4_'+str(i+1))(
-            splittensor(ratio_split=2,id_split=i)(conv_4)
+        Convolution2D(192, (3, 3), activation="relu", name='conv_4_'+str(i+1))(
+            splittensor(ratio_split=2, id_split=i)(conv_4)
         ) for i in range(2)], axis=-1, name="conv_4")
 
-    conv_5 = ZeroPadding2D((1,1))(conv_4)
+    conv_5 = ZeroPadding2D((1, 1))(conv_4)
     conv_5 = concatenate([
-        Convolution2D(128,(3,3),activation="relu",name='conv_5_'+str(i+1))(
-            splittensor(ratio_split=2,id_split=i)(conv_5)
+        Convolution2D(128, (3, 3), activation="relu", name='conv_5_'+str(i+1))(
+            splittensor(ratio_split=2, id_split=i)(conv_5)
         ) for i in range(2)], axis=-1, name="conv_5")
 
-    dense_1 = MaxPooling2D((3, 3), strides=(2,2),name="convpool_5")(conv_5)
+    dense_1 = MaxPooling2D((3, 3), strides=(2, 2), name="convpool_5")(conv_5)
 
     dense_1 = Flatten(name="flatten")(dense_1)
-    dense_1 = Dense(4096, activation='relu',name='dense_1')(dense_1)
+    dense_1 = Dense(4096, activation='relu', name='dense_1')(dense_1)
     dense_2 = Dropout(0.5)(dense_1)
-    dense_2 = Dense(4096, activation='relu',name='dense_2')(dense_2)
+    dense_2 = Dense(4096, activation='relu', name='dense_2')(dense_2)
     dense_3 = Dropout(0.5)(dense_2)
-    dense_3 = Dense(1000,name='dense_3')(dense_3)
-    prediction = Activation("softmax",name="softmax")(dense_3)
-
+    dense_3 = Dense(1000, name='dense_3')(dense_3)
+    prediction = Activation("softmax", name="softmax")(dense_3)
 
     model = Model(inputs=inputs, outputs=prediction)
-
-    convert_all_kernels_in_model(model)
     if weights_path:
         model.load_weights(weights_path)
 
-    
+    if K.backend() == 'tensorflow':
+        convert_all_kernels_in_model(model)
     return model
 
-def crosschannelnormalization(alpha = 1e-4, k=2, beta=0.75, n=5,**kwargs):
-    """
-    This is the function used for cross channel normalization in the original
-    Alexnet
-    """
+
+def crosschannelnormalization(alpha=1e-4, k=2, beta=0.75, n=5, **kwargs):
+    """Cross channel normalization in the original Alexnet."""
     def f(X):
         K.set_image_dim_ordering('th')
-        if K.backend()=='tensorflow':
+        if K.backend() == 'tensorflow':
             b, ch, r, c = X.get_shape()
         else:
-            b, ch, r, c = X.shape            
+            b, ch, r, c = X.shape
         half = n // 2
         square = K.square(X)
-        extra_channels = K.spatial_2d_padding(K.permute_dimensions(square, (0,2,3,1))
-                                              , ((0, 0), (half, half)))
-        extra_channels = K.permute_dimensions(extra_channels, (0,3,1,2))
+        extra_channels = K.spatial_2d_padding(K.permute_dimensions(square, (0, 2, 3, 1)),
+                                                                  ((0, 0), (half, half)))
+        extra_channels = K.permute_dimensions(extra_channels, (0, 3, 1, 2))
         scale = k
         for i in range(n):
-            if K.backend()=='tensorflow':
+            if K.backend() == 'tensorflow':
                 ch = int(ch)
-            scale += alpha * extra_channels[:,i:i+ch,:,:]
+            scale += alpha * extra_channels[:, i:i+ch, :, :]
         scale = scale ** beta
         return X / scale
 
-    return Lambda(f, output_shape=lambda input_shape:input_shape,**kwargs)
+    return Lambda(f, output_shape=lambda input_shape: input_shape, **kwargs)
 
-def splittensor(axis=1, ratio_split=1, id_split=0,**kwargs):
+
+def splittensor(axis=1, ratio_split=1, id_split=0, **kwargs):
     def f(X):
-        #if K.backend()=='tensorflow':
-        div = int(X.get_shape()[axis]) // ratio_split
-        #else:
-        #    div = X.shape[axis] // ratio_split
+        if K.backend() == 'tensorflow':
+            div = int(X.get_shape()[axis]) // ratio_split
+        else:
+            div = X.shape[axis] // ratio_split
 
         if axis == 0:
-            output =  X[id_split*div:(id_split+1)*div,:,:,:]
+            output = X[id_split*div:(id_split+1)*div, :, :, :]
         elif axis == 1:
-            output =  X[:, id_split*div:(id_split+1)*div, :, :]
+            output = X[:, id_split*div:(id_split+1)*div, :, :]
         elif axis == 2:
-            output = X[:,:,id_split*div:(id_split+1)*div,:]
+            output = X[:, :, id_split*div:(id_split+1)*div, :]
         elif axis == 3:
-            output = X[:,:,:,id_split*div:(id_split+1)*div]
+            output = X[:, :, :, id_split*div:(id_split+1)*div]
         else:
             raise ValueError("This axis is not possible")
 
         return output
 
     def g(input_shape):
-        output_shape=list(input_shape)
+        output_shape = list(input_shape)
         output_shape[axis] = output_shape[axis] // ratio_split
         return tuple(output_shape)
 
-    return Lambda(f,output_shape=lambda input_shape:g(input_shape),**kwargs)
+    return Lambda(f, output_shape=lambda input_shape: g(input_shape), **kwargs)
 
 
 if __name__ == '__main__':
-
-    #train_X, train_y = load_data('hw2_data/train/', 'hw2_data/train.csv')
-    #test_X, test_y  = load_data('hw2_data/test/', 'hw2_data/test.csv')
-    #pdb.set_trace()
-
     alexmodel = AlexNet('alexnet_weights.h5')
     for layer in alexmodel.layers:
         layer.trainable = False
-    final_dense = Dense(8, name='final_dense')(alexmodel.get_layer('dense_3').output)
+
+    final_dense = Dropout(0.5)(alexmodel.get_layer('dense_2').output)
+    final_dense = Dense(8, name='final_dense')(final_dense)
     prediction = Activation('softmax', name='softmax')(final_dense)
 
-    model = Model(input = alexmodel.get_layer(conv_1).input, output = prediction)
-    model.compile(loss='mean_squared_error', optimizer = 'adam', metrics=['accuracy'])
+    model = Model(inputs=alexmodel.get_layer('conv_1').input, outputs=prediction)
+    model.summary()
+    model.compile(loss='mean_squared_error', optimizer='adam', metrics=['accuracy'])
 
-    model.fit_generator(batch_generator(x_path, y_path, 20), steps_per_epoch=10, epochs=20)
-
-    
-
-
-
-
-
+    model.fit_generator(batch_generator('hw2_data/train/', 'hw2_data/train.csv', 20), steps_per_epoch=10, epochs=20)
